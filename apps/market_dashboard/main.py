@@ -1,34 +1,82 @@
 import streamlit as st
-import sys
-import os
+import pandas as pd
+import sys, os
+from datetime import datetime, timedelta
 
-# プロジェクトルートを sys.path に追加（←ここが超重要）
+# プロジェクトルートを sys.path に追加
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from apps.market_dashboard.data_fetcher import fetch_price_history
-from apps.market_dashboard.metrics import compute_returns
+from apps.market_dashboard.metrics import compute_returns_custom
 from apps.market_dashboard.config import CATEGORY_TICKERS
 
 st.set_page_config(page_title="Market Dashboard", layout="wide")
 st.title("📈 市況モニターダッシュボード")
 
-# ユーザー選択
-category = st.selectbox("カテゴリを選択", list(CATEGORY_TICKERS.keys()))
-option = st.selectbox("銘柄を選択", list(CATEGORY_TICKERS[category].keys()))
-ticker = CATEGORY_TICKERS[category][option]
+# 📅 日付選択
+col1, col2 = st.columns(2)
+with col1:
+    start_date = st.date_input("開始日", datetime.today() - timedelta(days=180))
+with col2:
+    end_date = st.date_input("終了日", datetime.today())
 
-# データ取得
-data = fetch_price_history(ticker)
-if data.empty:
-    st.warning("データが取得できませんでした。")
+if start_date >= end_date:
+    st.error("開始日は終了日より前である必要があります。")
+    st.stop()
+
+# 📂 カテゴリ・タグ・銘柄選択
+category = st.selectbox("カテゴリを選択", CATEGORY_TICKERS.keys())
+tags = CATEGORY_TICKERS[category]
+tag = st.selectbox("タグを選択", tags.keys())
+tickers = tags[tag]
+
+st.markdown("### 表示する銘柄を選択")
+selected_labels = [
+    label for label in tickers if st.checkbox(label, value=True)
+]
+
+
+
+# 📊 表データ構築
+summary_data = []
+
+for label in selected_labels:
+    ticker = tickers[label]
+    data = fetch_price_history(ticker, start=str(start_date), end=None)  # ← end=Noneで最新まで取得
+    if data.empty:
+        continue
+    metrics = compute_returns_custom(data, start_date, end_date)
+    def format_pct(value):
+        return f"{value * 100:.2f}%" if value is not None else ""
+
+    
+    summary_data.append({
+        "銘柄": label,
+        "タグ": tag,
+        "カテゴリ": category,
+        "開始値": metrics["start"],
+        "終了値": metrics["end"],
+        "直近値": metrics["latest"],
+        "乖離": format_pct(metrics["deviation"]),
+        "DTD": format_pct(metrics["change_from_prev_day"]),
+        "MTD": format_pct(metrics["change_from_month_end"]),
+        "YTD": format_pct(metrics["change_from_year_end"]),
+    })
+
+if summary_data:
+    st.subheader("📊 サマリー表")
+    df = pd.DataFrame(summary_data)
+    st.dataframe(df)
 else:
-    metrics = compute_returns(data)
+    st.warning("表示対象の銘柄がありません。")
 
-    st.subheader(f"{option}（{ticker}）のパフォーマンス")
-    st.write(f"最新価格: {metrics['latest']:.2f}")
-    st.metric("前日比", f"{metrics['change_from_prev_day'] * 100:.2f}%")
-    st.metric("前月末比", f"{metrics['change_from_month_end'] * 100:.2f}%")
-    st.metric("前年末比", f"{metrics['change_from_year_end'] * 100:.2f}%")
-
-    # オプション：折れ線グラフ
-    st.line_chart(data)
+# 📈 チャート表示
+if len(selected_labels) == 1:
+    label = selected_labels[0]
+    ticker = tickers[label]
+    st.subheader(f"📈 {label} の価格推移")
+    chart_data = fetch_price_history(ticker, start=str(start_date), end=None)
+    if not chart_data.empty:
+        st.line_chart(chart_data)
+    else:
+        st.warning("チャートデータが取得できませんでした。")
